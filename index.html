@@ -253,6 +253,15 @@ canvas#sky,canvas#fx{position:fixed;left:0;top:0;display:block}
 .vtick{width:40px;height:40px;flex:none;border-radius:50%;background:var(--leelo);color:#fff;border:3px solid var(--ink);display:grid;place-items:center;font-size:22px;font-weight:800;line-height:1}
 .choice{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 12px}
 .choice .btn{min-height:46px;font-size:17px;padding:4px 8px}
+.timerrow{display:flex;align-items:center;gap:10px;margin:0 0 10px}
+.timerrow .timer{flex:1;margin:0}
+.timer.hurry i{background:var(--rani)}
+.tcount{font-size:26px;font-weight:800;color:var(--rani);line-height:1;min-width:1.2em;text-align:right}
+.tcount:empty{display:none}
+.cheer{margin-top:6px}
+.cheer .gu{font-size:22px;font-weight:800;line-height:1.15;color:var(--leelo)}
+.cheer .roman{font-size:16px}
+.cheer .en{font-size:14px}
 .rtbar{height:12px;border:3px solid var(--ink);border-radius:999px;overflow:hidden;background:#fff;margin:6px 0 10px}
 .rtbar i{display:block;height:100%;width:0;background:var(--leelo);transition:width .3s}
 .mic.off{background:#B7B0D8}
@@ -393,6 +402,19 @@ const TAUNTS = [
   { gu:'તારી પતંગ નીચી છે!', roman:'Taari patang neechi chhe!' },
 ];
 const ESCAPE = { gu:'પકડી બતાવ!', roman:'Pakdi bataav!' };
+// Battle countdown: with 11 seconds left Mithu says "Jaldi!", then counts 10 down to 1 in Gujarati.
+const JALDI = { gu:'જલદી!', roman:'Jaldi!' };
+const COUNT = [ // COUNT[n - 1] is n
+  { gu:'એક', roman:'ek' }, { gu:'બે', roman:'be' }, { gu:'ત્રણ', roman:'tran' }, { gu:'ચાર', roman:'chaar' }, { gu:'પાંચ', roman:'paanch' },
+  { gu:'છ', roman:'chha' }, { gu:'સાત', roman:'saat' }, { gu:'આઠ', roman:'aath' }, { gu:'નવ', roman:'nav' }, { gu:'દસ', roman:'das' },
+];
+// When a kite gets away, Mithu cheers the child on.
+const ENCOURAGE = [
+  { gu:'કોઈ વાંધો નહીં! ફરી પ્રયત્ન કરીએ!', roman:'Koi vaandho nahi! Fari prayatna kariye!', en:'No problem! Let’s try again!' },
+  { gu:'તું કરી શકે છે!',                   roman:'Tu kari shake chhe!',                   en:'You can do it!' },
+  { gu:'હિંમત રાખ! આગળની પતંગ તારી!',      roman:'Himmat raakh! Aagalni patang taari!',     en:'Be brave! The next kite is yours!' },
+  { gu:'શાબાશ! બસ થોડું જલદી બોલજે!',       roman:'Shaabaash! Bas thodu jaldi bolje!',       en:'Well done! Just say it a little faster!' },
+];
 const MITHU = {
   kemcho:{ gu:'કેમ છો?',      roman:'Kem cho?' },
   teach: { gu:'મને શીખવાડો!',  roman:'Mane sheekhvaado!' },
@@ -526,7 +548,7 @@ function buildSheets() {
   const seen = new Set(), sheets = [];
   const add = (sheet, line) => { for (const p of sayParts(line)) { const k = voiceKey(p.gu); if (!k || seen.has(k)) continue; seen.add(k); sheet.lines.push({ key: k, gu: p.gu, roman: p.roman }); } };
   const first = { id: 's1', name: 'Mithu and friends', lines: [] };
-  [MITHU.kemcho, MITHU.majama, GREET_BIG, MITHU.teach, MITHU.vaah, MITHU.again, MITHU.kaipo, MITHU.chalo, MITHU.aavjo, POKES[4]].concat(TAUNTS, [ESCAPE]).forEach(l => add(first, l));
+  [MITHU.kemcho, MITHU.majama, GREET_BIG, MITHU.teach, MITHU.vaah, MITHU.again, MITHU.kaipo, MITHU.chalo, MITHU.aavjo, POKES[4]].concat(TAUNTS, [ESCAPE, JALDI], COUNT.slice().reverse(), ENCOURAGE).forEach(l => add(first, l));
   sheets.push(first);
   WEEKS.forEach((wk, i) => {
     const sh = { id: 's' + (i + 2), name: 'Week ' + wk.week + ': ' + wk.theme, lines: [] };
@@ -1664,11 +1686,10 @@ async function startSession(who) {
     await sleep(1000); if (!alive(id)) return;
     G.hintUsed = false;
     showBattle(it, i, rv);
-    if (G.who === 'big') { startTimer(id, 25); speak(it.q, 'rival'); }
-    let r = await until(['correct', 'timeout']); if (!alive(id)) return;
+    startTimer(id, 30);
+    if (G.who === 'big') speak(it.q, 'rival');
+    const r = await until(['correct', 'timeout']); if (!alive(id)) return;
     stopTimers();
-    // Time's up: the grown-up says whether the answer came in time, so a slow tap never costs the child the kite.
-    if (r.name === 'timeout') { timeUp(); r = await until(['correct', 'escape']); if (!alive(id)) return; }
     if (r.name === 'correct') {
       showPull();
       await until('pulled'); if (!alive(id)) return;
@@ -1676,9 +1697,12 @@ async function startSession(who) {
       await sleep(1500); if (!alive(id)) return;
       showCut(rv, gain, i === G.battles.length - 1);
     } else {
+      // time ran out: the rival flies off taunting, then Mithu cheers the child on
       escapeRival(); G.esc++;
-      await sleep(700); if (!alive(id)) return;
-      showEscape(rv, i === G.battles.length - 1);
+      await sleep(1400); if (!alive(id)) return;
+      const cheer = ENCOURAGE[G.esc % ENCOURAGE.length];
+      mithuSays(cheer, 3400); M.flap = 1.2; M.hop = 1;
+      showEscape(rv, i === G.battles.length - 1, cheer);
     }
     await until('next'); if (!alive(id)) return;
     hideCard(); battle.crossing = false; player.spd = 1.8; aimKites(false);
@@ -1717,6 +1741,7 @@ function showBattle(it, i, rv) {
   if (G.who === 'little') {
     showCard(pips(step) +
       '<div class="vs">' + kiteCv(rv.design, rv.c1, rv.c2, 28, 35) + '<span><b>' + rv.name + '</b>’s kite is crossing yours!</span></div>' +
+      '<div class="timerrow"><div class="timer" id="tmr" aria-hidden="true"><i id="tbar"></i></div><b class="tcount gu" id="tcount" aria-live="polite"></b></div>' +
       '<div class="pic huge">' + picHTML(it) + '</div>' +
       '<h2 class="say center">Say it to cut the kite!</h2>' +
       '<div class="peek" id="peek" hidden><span class="gu">' + esc(it.gu) + '</span> <span class="roman lg">' + esc(it.roman) + '</span></div>' +
@@ -1729,7 +1754,7 @@ function showBattle(it, i, rv) {
     listenFor(it, 'quiet');
   } else {
     showCard('<div class="cardtop"><div class="vs">' + kiteCv(rv.design, rv.c1, rv.c2, 28, 35) + '<span><b>' + rv.name + '</b> asks</span></div>' + pips(step) + '</div>' +
-      '<div class="timer" aria-hidden="true"><i id="tbar"></i></div>' +
+      '<div class="timerrow"><div class="timer" id="tmr" aria-hidden="true"><i id="tbar"></i></div><b class="tcount gu" id="tcount" aria-live="polite"></b></div>' +
       '<div class="ask"><div class="txt"><div class="q gu">' + esc(it.q.gu) + '</div><div class="qg">' + esc(it.q.roman) + '</div></div>' +
       '<button class="hear" data-act="hearq" aria-label="Hear the question">' + SPEAKER + '</button></div>' +
       '<div class="row2"><div class="scene" aria-hidden="true">' + it.pic + '</div>' +
@@ -1747,25 +1772,24 @@ function showBattle(it, i, rv) {
     listenFor(it.a, 'quiet');
   }
 }
+const guDigits = n => String(n).replace(/\d/g, d => String.fromCharCode(0x0AE6 + +d));
+// The battle clock. With 11 seconds left Mithu shouts "Jaldi!", then counts down "das … ek" one a second,
+// with the Gujarati numeral shown by the timer bar. At zero the battle times out and the kite gets away.
 function startTimer(id, secs) {
-  const t0 = performance.now(); battle.timer = 1;
+  const t0 = performance.now(); battle.timer = 1; let lastLeft = Math.ceil(secs);
   timerInt = setInterval(() => {
     if (!alive(id)) { stopTimers(); return; }
-    const f = 1 - (performance.now() - t0) / (secs * 1000); battle.timer = Math.max(0, f);
+    const el = (performance.now() - t0) / 1000, f = 1 - el / secs; battle.timer = Math.max(0, f);
     const tb = $('#tbar'); if (tb) tb.style.width = (battle.timer * 100) + '%';
+    const left = Math.ceil(secs - el);
+    if (left < lastLeft && left >= 1) {   // a new whole second (only the latest is said if the clock skipped any)
+      lastLeft = left;
+      const tc = $('#tcount'), tm = $('#tmr');
+      if (left === 11) { mithuSays(JALDI, 950); M.flap = 1; M.hop = 1; if (tc) tc.textContent = JALDI.gu; if (tm) tm.classList.add('hurry'); }
+      else if (left <= 10) { mithuSays(COUNT[left - 1], 900); if (tc) tc.textContent = guDigits(left); if (tm) tm.classList.add('hurry'); }
+    }
     if (f <= 0) { stopTimers(); fire('timeout'); }
   }, 100);
-}
-// The rival tugs but stays put until the grown-up decides.
-function timeUp() {
-  SFX.tension(); if (rival) rival.jit = 1;
-  const card = dock.querySelector('.card'); if (!card) return;
-  const tb = $('#tbar'); if (tb) tb.style.width = '0%';
-  const hb = $('#hintBtn'); if (hb) hb.hidden = true;
-  const jq = card.querySelector('.jq span'); if (jq) jq.textContent = 'Time’s up! Did they answer in time?';
-  const jb = card.querySelector('.jb');
-  if (jb) jb.innerHTML = '<button class="btn white" data-act="escape">No, it got away</button><button class="btn leelo" data-act="correct">Yes! Cut it!</button>';
-  ACT.escape = () => fire('escape');
 }
 function showPull() {
   battle.pull = 0; const need = G.who === 'little' ? 8 : 12; let taps = 0, done = false;
@@ -1820,8 +1844,10 @@ function showCut(rv, gain, lastOne) {
     (G.streak >= 2 ? '<span class="streak">' + G.streak + ' in a row! +1 bonus</span>' : '') + '</div></div>' +
     '<button class="btn rani block" data-act="next" data-focus>' + (lastOne ? 'See what you won' : 'Next kite') + '</button>', { next: () => fire('next') });
 }
-function showEscape(rv, lastOne) {
-  showCard('<div class="result">' + kiteCv(rv.design, rv.c1, rv.c2, 56, 70) + '<div><h2 class="say">' + rv.name + ' got away!</h2><div class="sub">Too slow this time. The next one is yours.</div></div></div>' +
+function showEscape(rv, lastOne, cheer) {
+  showCard('<div class="result">' + kiteCv(rv.design, rv.c1, rv.c2, 56, 70) + '<div><h2 class="say">' + rv.name + ' got away!</h2>' +
+    (cheer ? '<div class="cheer"><span class="tag">Mithu says</span><div class="gu">' + esc(cheer.gu) + '</div><div class="roman">' + esc(cheer.roman) + '</div><div class="en">' + esc(cheer.en) + '</div></div>'
+      : '<div class="sub">Too slow this time. The next one is yours.</div>') + '</div></div>' +
     '<button class="btn rani block" data-act="next" data-focus>' + (lastOne ? 'See what you won' : 'Next kite') + '</button>', { next: () => fire('next') });
 }
 function finishSession() {
