@@ -248,6 +248,11 @@ canvas#sky,canvas#fx{position:fixed;left:0;top:0;display:block}
 .round.sm{width:40px;height:40px;box-shadow:0 3px 0 var(--ink)}
 .round.sm svg{width:18px;height:18px}
 .pill canvas{width:22px;height:28px}
+.microw.have{gap:10px;flex-wrap:wrap}
+.microw .linkbtn{display:inline;margin:0;padding:6px 4px}
+.vtick{width:40px;height:40px;flex:none;border-radius:50%;background:var(--leelo);color:#fff;border:3px solid var(--ink);display:grid;place-items:center;font-size:22px;font-weight:800;line-height:1}
+.choice{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 12px}
+.choice .btn{min-height:46px;font-size:17px;padding:4px 8px}
 .mic.off{background:#B7B0D8}
 .mic.off svg{opacity:.85}
 .flyer .btn.rec{min-height:48px;font-size:17px;padding:4px 10px;gap:6px;box-shadow:0 4px 0 var(--ink)}
@@ -677,7 +682,7 @@ async function loadVoiceMap() {
 // Three voices: each flyer's own (Mithu copies the child who taught him) and the grown-up's (the guide).
 // A record is { blob, start, end }: start and end trim the silence around the words.
 const OWN = { little: new Set(), big: new Set(), family: new Set() };
-let VS = null, idbP = null, saveWarned = false;
+let VS = null, idbP = null, saveWarned = false, persistAsked = false, ownReady = Promise.resolve();
 const curWho = () => (G && G.who) || (VS && VS.who) || S.last;
 function idb() {
   if (!idbP) idbP = new Promise((res, rej) => {
@@ -695,10 +700,13 @@ function idbDo(mode, fn) {
 async function loadOwnClips() {
   try { for (const id of (await idbDo('readonly', st => st.getAllKeys())) || []) { const [s, k] = String(id).split('|'); if (OWN[s] && k) OWN[s].add(k); } } catch (e) {}
 }
+// Saved as raw bytes rather than a Blob: some browsers (older Safari especially) drop Blobs kept in IndexedDB.
 function saveOwn(scope, key, clip) {
   const id = scope + '|' + key;
   OWN[scope].add(key); clipBufs.set(id, Promise.resolve({ buf: clip.buf, start: clip.start, end: clip.end }));
-  idbDo('readwrite', st => st.put({ blob: clip.blob, start: clip.start, end: clip.end, at: Date.now() }, id))
+  if (!persistAsked) { persistAsked = true; try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (e) {} }
+  clip.blob.arrayBuffer()
+    .then(ab => idbDo('readwrite', st => st.put({ ab, type: clip.blob.type, start: clip.start, end: clip.end, at: Date.now() }, id)))
     .catch(() => { if (!saveWarned) { saveWarned = true; toast('This browser won’t keep recordings after it closes'); } });
 }
 function dropOwn(scope, key) { const id = scope + '|' + key; OWN[scope].delete(key); clipBufs.delete(id); idbDo('readwrite', st => st.delete(id)).catch(() => {}); }
@@ -724,7 +732,10 @@ function loadRef(r) {
   if (!clipBufs.has(r.id)) {
     const p = r.url
       ? fetch(r.url).then(x => { if (!x.ok) throw new Error('fetch'); return x.arrayBuffer(); }).then(decodeAB).then(buf => ({ buf, start: 0, end: buf.duration }))
-      : idbDo('readonly', st => st.get(r.id)).then(rec => { if (!rec) throw new Error('gone'); return decodeBlob(rec.blob).then(buf => ({ buf, start: rec.start || 0, end: rec.end || buf.duration })); });
+      : idbDo('readonly', st => st.get(r.id)).then(rec => {
+          if (!rec) throw new Error('gone');
+          return (rec.ab ? decodeAB(rec.ab) : decodeBlob(rec.blob)).then(buf => ({ buf, start: rec.start || 0, end: rec.end || buf.duration }));
+        });
     p.catch(() => clipBufs.delete(r.id));
     clipBufs.set(r.id, p);
   }
@@ -839,6 +850,21 @@ function micRow(label) {
   const off = !micReady();
   return '<div class="microw"><button class="mic' + (off ? ' off' : '') + '" data-act="mic" aria-label="Record">' + MIC_SVG + '</button>' +
     '<span class="miclab">' + (off ? MIC_TEXT[MIC.ok ? 'policy' : 'none'] : label) + '</span></div>';
+}
+// In a lesson, a line is recorded once. If this flyer already has their voice for it, say so instead of asking
+// again ("Record again" is there if they want it). If they chose Mithu's own voice, no recording is asked for.
+function voiceRow(line, label) {
+  const w = curWho(), Fy = S.flyers[w];
+  if (!Fy || Fy.mithuMine === false) return '';
+  if (!OWN[w].has(voiceKey(line.gu))) return micRow(label);
+  return '<div class="microw have"><span class="vtick" aria-hidden="true">✓</span><span class="miclab">Mithu has your voice for this.</span>' +
+    '<button class="btn white sm" data-act="mymithu">' + SPEAKER + 'Hear</button><button class="linkbtn" data-act="redo">Record again</button></div>';
+}
+// Swap the ✓ row for a live mic and start recording straight away.
+function redoVoice(b, line) {
+  const row = b.closest('.microw'); if (!row) return;
+  row.outerHTML = micRow('Say it again…');
+  const m = dock.querySelector('.microw .mic'); if (m) teachMic(m, line);
 }
 function micSay(btn) { const l = btn.parentElement && btn.parentElement.querySelector('.miclab'); return t => { if (l) l.textContent = t; }; }
 // In a session, a take only becomes Mithu's voice once a grown-up taps Yes.
@@ -1467,16 +1493,24 @@ function mvLines(who) {
     const l = who === 'big' ? it.a : it, k = voiceKey(l.gu);
     if (!seen.has(k)) { seen.add(k); taught.push({ gu: l.gu, roman: l.roman, k }); }
   }
-  const own = [MITHU.kemcho, MITHU.teach, MITHU.vaah, MITHU.again, MITHU.chalo, MITHU.kaipo, MITHU.aavjo, POKES[4]]
+  const own = [who === 'little' ? MITHU.majama : GREET_BIG, MITHU.kemcho, MITHU.teach, MITHU.vaah, MITHU.again, MITHU.chalo, MITHU.kaipo, MITHU.aavjo, POKES[4]]
     .map(l => ({ gu: l.gu, roman: l.roman, k: voiceKey(l.gu) })).filter(l => !seen.has(l.k));
   return { taught, own };
 }
 // Opens on the first line not yet recorded, with one big mic for it; the list below picks another line.
 function openMithuVoice(who) {
   VS = { who, sel: 0 }; $('#logo').hidden = true; S.last = who; save(); setPlayerKite(who);
-  const { taught, own } = mvLines(who), all = taught.concat(own);
-  VS.sel = Math.max(0, all.findIndex(l => !OWN[who].has(l.k)));
-  renderMithuVoice();
+  ownReady.then(() => {
+    if (!VS || VS.who !== who) return;
+    const { taught, own } = mvLines(who), all = taught.concat(own);
+    VS.sel = Math.max(0, all.findIndex(l => !OWN[who].has(l.k)));
+    renderMithuVoice();
+  });
+}
+// The next line still to record, after the current one; any next line once all are done.
+function nextToRecord(all, who, from) {
+  for (let s = 1; s <= all.length; s++) { const i = (from + s) % all.length; if (!OWN[who].has(all[i].k)) return i; }
+  return (from + 1) % all.length;
 }
 function renderMithuVoice(keepScroll, msg) {
   const who = VS.who, Fy = S.flyers[who], { taught, own } = mvLines(who), all = taught.concat(own), mine = Fy.mithuMine !== false;
@@ -1490,7 +1524,10 @@ function renderMithuVoice(keepScroll, msg) {
       (has ? '<button class="round sm" data-act="del" data-i="' + i + '" aria-label="Delete my recording of ' + esc(l.roman) + '">' + CLOSE_SVG + '</button>' : '') + '</li>';
   };
   showCard('<div class="headrow"><h2 class="say">Record my voice</h2><span class="pill sm">' + kiteCv(Fy.design, Fy.c1, Fy.c2, 22, 28) + (who === 'little' ? 'Little flyer' : 'Big flyer') + '</span></div>' +
-    '<p class="sub" style="margin:-2px 0 10px">Say a line and Mithu copies you. After that, he says it in your voice. ' + done + ' of ' + all.length + ' recorded.</p>' +
+    '<div class="clabel" style="margin-top:0">When Mithu talks, use</div>' +
+    '<div class="choice" role="group" aria-label="Mithu’s voice"><button class="btn ' + (mine ? 'leelo' : 'white') + '" data-act="usemine" aria-pressed="' + mine + '">My voice</button>' +
+    '<button class="btn ' + (mine ? 'white' : 'leelo') + '" data-act="useparrot" aria-pressed="' + !mine + '">Mithu’s own</button></div>' +
+    '<p class="sub" style="margin:-2px 0 10px">Record each line once. Mithu keeps it and uses it every time he says that line. ' + done + ' of ' + all.length + ' recorded.</p>' +
     '<div class="word"><div class="txt"><div class="mid-gu gu">' + esc(cur.gu) + '</div><div class="roman lg">' + esc(cap(cur.roman)) + '</div></div>' +
     '<button class="hear" data-act="hear" aria-label="Hear how it sounds">' + SPEAKER + '</button></div>' +
     micRow(msg || (hasCur ? 'Tap to record it again' : 'Tap the mic and say it')) +
@@ -1498,16 +1535,16 @@ function renderMithuVoice(keepScroll, msg) {
     '<button class="btn sm" data-act="next">Next line</button></div>' +
     (taught.length ? '<div class="clabel" style="margin-top:14px">Words you taught Mithu</div><ol class="prompter vlist">' + taught.map((l, i) => row(l, i)).join('') + '</ol>' : '') +
     '<div class="clabel" style="margin-top:14px">Mithu’s own lines</div><ol class="prompter vlist">' + own.map((l, i) => row(l, taught.length + i)).join('') + '</ol>' +
-    '<div class="set row" style="margin-top:8px"><div class="sl" style="margin:0">Mithu talks in my voice</div><button class="btn sm ' + (mine ? 'leelo' : 'white') + '" data-act="mine" aria-pressed="' + mine + '">' + (mine ? 'On' : 'Off') + '</button></div>' +
-    '<p class="sub" style="margin:0">Recordings stay on this device.</p>' +
+    '<p class="sub" style="margin:10px 0 0">Recordings stay on this device and are kept until you delete them.</p>' +
     '<button class="btn white block" data-act="back" style="margin-top:12px">Back</button>',
     { hear: () => speak(cur, 'guide'),
-      mic: b => micTap(b, clip => { saveOwn(who, cur.k, clip); echo(clip); bubble(bubM, cur, 2200); renderMithuVoice(true, 'Mithu copied you! Tap to record it again.'); }, micSay(b)),
+      mic: b => micTap(b, clip => { saveOwn(who, cur.k, clip); echo(clip); bubble(bubM, cur, 2200); renderMithuVoice(true, 'Saved! Mithu will use this every time. Tap Next line.'); }, micSay(b)),
       mithu: () => speak(cur, 'mithu'),
-      next: () => { VS.sel = (VS.sel + 1) % all.length; SFX.pop(); renderMithuVoice(); },
+      next: () => { VS.sel = nextToRecord(all, who, VS.sel); SFX.pop(); renderMithuVoice(); },
+      usemine: () => { Fy.mithuMine = true; save(); SFX.pop(); renderMithuVoice(true); },
+      useparrot: () => { Fy.mithuMine = false; save(); SFX.pop(); renderMithuVoice(true); },
       pick: b => { VS.sel = +b.dataset.i; SFX.pop(); renderMithuVoice(); },
       del: b => { dropOwn(who, all[+b.dataset.i].k); SFX.pop(); renderMithuVoice(true); },
-      mine: () => { Fy.mithuMine = !mine; save(); SFX.pop(); renderMithuVoice(true); },
       back: () => { VS = null; goTitle(); } });
   if (keepScroll) { const c = dock.querySelector('.card'); if (c) c.scrollTop = prevTop; }
 }
@@ -1533,7 +1570,8 @@ async function startSession(who) {
     G.teach.map(t => who === 'big' ? t.a : t), ...G.battles.map(b => who === 'big' ? [b.q, b.a] : [b])));
   if (rival) { rival.mode = 'escape'; rival.vx = 60; rival.vy = -40; }
   battle.crossing = false; player.grounded = true; player.spd = 5; aimKites(false);
-  // 1. greeting (inside the tap, so the voice is allowed to play)
+  // 1. greeting (inside the tap, so the voice is allowed to play); saved voices are known first
+  await ownReady; if (!alive(id)) return;
   mithuSays(MITHU.kemcho, 2800);
   showGreet(who);
   await until('correct'); if (!alive(id)) return;
@@ -1595,9 +1633,10 @@ function showGreet(who) {
     '<button class="hear" data-act="hearq" aria-label="Hear Mithu">' + SPEAKER + '</button></div>' +
     '<h2 class="say center" style="margin-top:12px">Answer Mithu out loud!</h2>' +
     '<div class="answer"><span class="gu">' + ans.gu + '</span><span class="roman">' + ans.roman + '</span><button class="hear sm" data-act="heara" aria-label="Hear the answer">' + SPEAKER + '</button></div>' +
-    micRow('Tap, then answer Mithu') +
+    voiceRow(ans, 'Tap and answer. Mithu keeps your voice for next time.') +
     judge('Grown-up: did they answer in Gujarati?', 'Again', 'Yes!'),
     { hearq: () => mithuSays(MITHU.kemcho, 2200), heara: () => speak(ans, 'guide'), mic: b => teachMic(b, ans),
+      mymithu: () => mithuSays(ans, 2000), redo: b => redoVoice(b, ans),
       again: () => { dropPending(); mithuSays(MITHU.again, 1500); shakeCard(); }, correct: () => { keepPending(); fire('correct'); } });
 }
 function showTeach(it, i) {
@@ -1606,8 +1645,8 @@ function showTeach(it, i) {
     '<div class="headrow"><h2 class="say">Teach Mithu</h2><span class="sub">New ' + (big ? 'line' : 'word') + ' ' + (i + 1) + ' of ' + G.teach.length + '</span></div>' +
     '<div class="word"><div class="pic">' + picHTML(it) + '</div><div class="txt"><div class="' + (big ? 'mid-gu' : 'big-gu') + ' gu">' + esc(w.gu) + '</div><div class="roman lg">' + esc(w.roman) + '</div>' +
     '<div class="en">' + esc(w.en) + '</div></div><button class="hear" data-act="hear" aria-label="Hear it" data-focus>' + SPEAKER + '</button></div>' +
-    micRow('Listen, then tap and say it to Mithu') + judge('Grown-up: did they say it?', 'Again', 'Learned it!'),
-    { hear: () => speak(w, 'guide'), mic: b => teachMic(b, w),
+    (voiceRow(w, 'Tap and say it. Mithu keeps your voice for next time.') || '<p class="tip">Listen, then say it to Mithu.</p>') + judge('Grown-up: did they say it?', 'Again', 'Learned it!'),
+    { hear: () => speak(w, 'guide'), mic: b => teachMic(b, w), mymithu: () => mithuSays(w, 2000), redo: b => redoVoice(b, w),
       again: () => { dropPending(); speak(w, 'guide'); mithuSays(MITHU.again, 1500, false); shakeCard(); },
       correct: () => { keepPending(); fire('correct'); } });
 }
@@ -1952,7 +1991,7 @@ window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(layo
 document.addEventListener('visibilitychange', () => { if (document.hidden) { try { speechSynthesis.cancel(); } catch (e) {} } });
 
 loadVoiceMap();
-loadOwnClips();
+ownReady = loadOwnClips();
 micProbe();
 layout();
 setPlayerKite(S.last);
