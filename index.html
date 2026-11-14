@@ -371,7 +371,7 @@ const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { c
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const REDUCED = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
 // Bump with every release. Browsers may keep an old copy of the page for a while, so the game checks for a newer one.
-const APP_VERSION = '2026-11-14.7';
+const APP_VERSION = '2026-11-14.8';
 const INK = '#24145A';
 
 // ---------- data (pure, also read by the recording tool) ----------
@@ -649,6 +649,7 @@ const SFX = {
   coin: () => { tone(988, 0.06, 'square', 0.06); tone(1319, 0.11, 'square', 0.06, 0.06); },
   tension: () => noise(0.55, 0.12, 700, 'bandpass', 1700, 0, 4),
   pop: () => tone(660, 0.08, 'sine', 0.18, 0, 990),
+  tick: () => tone(1180, 0.05, 'sine', 0.12),
 };
 
 // ---------- speech: Gujarati voice, else Hindi voice reading the same words ----------
@@ -1438,6 +1439,14 @@ function bubble(el, line, ms = 2600) {
   el.querySelector('.g').textContent = line.gu; if (line.roman) el.querySelector('.r').textContent = line.roman;
   el.classList.add('on'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('on'), ms);
 }
+// The countdown and cheers only ever play in a recorded voice: the same one Mithu uses for the lesson words
+// (the child's own take, else the grown-up's). Never the device's computer voice, which garbles when it has
+// to speak once a second. With no recording yet the line still shows in Mithu's bubble, with a soft sound.
+function mithuRecorded(line, ms, fallback) {
+  bubble(bubM, line, ms || 2000); M.talkUntil = T + 0.8;
+  if (S.sound && refsFor(line, 'mithu')) speak(line, 'mithu');
+  else { stopVoice(); if (fallback) fallback(); }
+}
 function mithuSays(line, ms, voice = true) { bubble(bubM, line, ms || 2600); if (voice) speak(line, 'mithu'); else M.talkUntil = T + 1; }
 function rivalSays(line, ms, voice = true) { bubble(bubR, line, ms || 2400); if (voice) speak(line, 'rival'); }
 function placeBubbles() {
@@ -1788,8 +1797,8 @@ function startTimer(id, secs) {
     if (left < lastLeft && left >= 1) {   // a new whole second (only the latest is said if the clock skipped any)
       lastLeft = left;
       const tc = $('#tcount'), tm = $('#tmr');
-      if (left === 11) { mithuSays(JALDI, 950); M.flap = 1; M.hop = 1; if (tc) tc.textContent = JALDI.gu; if (tm) tm.classList.add('hurry'); }
-      else if (left <= 10) { mithuSays(COUNT[left - 1], 900); if (tc) tc.textContent = guDigits(left); if (tm) tm.classList.add('hurry'); }
+      if (left === 11) { mithuRecorded(JALDI, 950, SFX.tick); M.flap = 1; M.hop = 1; if (tc) tc.textContent = JALDI.gu; if (tm) tm.classList.add('hurry'); }
+      else if (left <= 10) { mithuRecorded(COUNT[left - 1], 900, SFX.tick); if (tc) tc.textContent = guDigits(left); if (tm) tm.classList.add('hurry'); }
       else if (tc) tc.textContent = guDigits(left);
     }
     if (f <= 0) { stopTimers(); fire('timeout'); }
@@ -1800,7 +1809,7 @@ async function kiteEscapes(id, rv, lastOne) {
   escapeRival(); G.esc++;
   await sleep(1400); if (!alive(id)) return false;
   const cheer = ENCOURAGE[G.esc % ENCOURAGE.length];
-  mithuSays(cheer, 3400); M.flap = 1.2; M.hop = 1;
+  mithuRecorded(cheer, 3400, SFX.chime); M.flap = 1.2; M.hop = 1;
   showEscape(rv, lastOne, cheer);
   return true;
 }
@@ -2024,6 +2033,7 @@ function openGrownups() {
     '<div class="set"><div class="sl">Word pack</div><div class="weeks">' + WEEKS.map(w => '<button class="wk ' + (S.week === w.week ? 'sel' : '') + '" data-act="week" data-w="' + w.week + '" aria-pressed="' + (S.week === w.week) + '"><b>Week ' + w.week + '</b><span>' + w.theme + '</span></button>').join('') + '</div></div>' +
     '<div class="set"><div class="sl">Your voice</div><p class="note">Read the game’s lines once and the kids hear you instead of a computer voice: Mithu, the guide and the rival kites all speak like you. ' +
       (OWN.family.size ? OWN.family.size + ' line' + (OWN.family.size === 1 ? '' : 's') + ' recorded so far.' : 'Nothing recorded yet.') + '</p>' +
+    countButton() +
     '<button class="btn block" data-act="voice" style="margin-top:10px">' + MIC_SVG + 'Read the lines</button>' +
     '<div class="row" style="margin-top:10px"><button class="btn white sm" data-act="savevoice"' + (OWN.family.size ? '' : ' disabled') + '>Save to a file</button><button class="btn white sm" data-act="loadvoice">Load a file</button></div>' +
     '<p class="sub" style="margin:8px 0 0">Recordings live on this device. Save them to a file as a backup, or to load your voice onto the kids’ tablet.</p></div>' +
@@ -2041,7 +2051,7 @@ function openGrownups() {
     { week: b => { S.week = +b.dataset.w; save(); SFX.pop(); openGrownups(); },
       test: () => { if (!S.sound) { toast('Sound is off'); return; } mithuSays(MITHU.kemcho, 2000); },
       voice: () => openSheets(),
-      savevoice: () => exportVoice(), loadvoice: () => importVoice(),
+      savevoice: () => exportVoice(), loadvoice: () => importVoice(), readcount: () => openReadThrough(countLines()),
       squeak: () => { S.squeak = S.squeak === false; save(); SFX.pop(); openGrownups(); },
       pin: () => pinSetup(openGrownups, openGrownups),
       listen: () => { S.listen = S.listen === false; save(); SFX.pop(); openGrownups(); },
@@ -2135,6 +2145,11 @@ async function rtLoop(tok) {
   }
 }
 const allLines = () => allSheets().flatMap(sh => sh.lines.map(l => Object.assign({ sheet: sh.name }, l)));
+// The battle countdown and Mithu's cheers, as one short read-through (they only ever play in a recorded voice).
+const countLines = () => [JALDI].concat(COUNT.slice().reverse(), ENCOURAGE).map(l => ({ key: voiceKey(l.gu), gu: l.gu, roman: l.roman, sheet: 'Battle countdown and Mithu’s cheers' }));
+const countMissing = () => countLines().filter(l => !lineHas(l)).length;
+const countButton = () => countMissing() && micReady()
+  ? '<button class="btn rani block" data-act="readcount" style="margin-top:10px">' + MIC_SVG + 'Record the countdown and cheers (' + countMissing() + ' left)</button>' : '';
 const sheetLines = i => allSheets()[i].lines.map(l => Object.assign({ sheet: allSheets()[i].name }, l));
 
 // ---------- your voice as a file: a backup, and the way to put it on another device ----------
@@ -2192,7 +2207,8 @@ function openSheets() {
   const all = allSheets(), total = all.reduce((n, sh) => n + sh.lines.length, 0), have = all.reduce((n, sh) => n + sheetDone(sh), 0);
   showCard('<div class="headrow"><h2 class="say">Recording sheets</h2><button class="round" data-act="back" aria-label="Back">' + CLOSE_SVG + '</button></div>' +
     '<p class="tip" style="margin-top:0">' + have + ' of ' + total + ' lines are in your voice. Read them once and Mithu, the guide and the rival kites all speak like you.</p>' +
-    (micReady() ? '<button class="btn rani block" data-act="readall" style="margin:4px 0 12px">' + MIC_SVG + (have ? 'Carry on reading (' + (total - have) + ' left)' : 'Read all ' + total + ' lines') + '</button>' +
+    countButton() +
+    (micReady() ? '<button class="btn rani block" data-act="readall" style="margin:10px 0 12px">' + MIC_SVG + (have ? 'Carry on reading (' + (total - have) + ' left)' : 'Read all ' + total + ' lines') + '</button>' +
         '<p class="sub" style="margin:0 0 10px">About 15 minutes. You can stop any time and carry on later. Recordings stay on this device; save them to a file in Grown-ups.</p>'
       : '<p class="tip">' + MIC_TEXT[MIC.ok ? 'policy' : 'none'] + '</p>') +
     '<div class="sheets">' + all.map((sh, i) => {
@@ -2201,7 +2217,7 @@ function openSheets() {
         (d === n ? 'All ' + n + ' lines recorded' : d ? d + ' of ' + n + ' lines recorded' : n + ' lines') + '</span></span></button>';
     }).join('') + '</div>' +
     '<button class="btn white block" data-act="back" style="margin-top:14px">Back</button>',
-    { open: b => openSheet(+b.dataset.i), readall: () => openReadThrough(allLines()), back: () => openGrownups() });
+    { open: b => openSheet(+b.dataset.i), readall: () => openReadThrough(allLines()), readcount: () => openReadThrough(countLines()), back: () => openGrownups() });
 }
 function openSheet(i, keepScroll) {
   const all = allSheets(), sh = all[i], ready = micReady();
