@@ -257,7 +257,7 @@ canvas#sky,canvas#fx{position:fixed;left:0;top:0;display:block}
 .timerrow{display:flex;align-items:center;gap:10px;margin:0 0 10px}
 .timerrow .timer{flex:1;margin:0}
 .timer.hurry i{background:var(--rani)}
-.tcount{font-size:26px;font-weight:800;color:var(--rani);line-height:1;min-width:1.2em;text-align:right}
+.tcount{font-size:22px;font-weight:800;color:var(--rani);line-height:1;min-width:1.2em;text-align:right;white-space:nowrap}
 .tcount:empty{display:none}
 .cheer{margin-top:6px}
 .cheer .gu{font-size:22px;font-weight:800;line-height:1.15;color:var(--leelo)}
@@ -371,7 +371,7 @@ const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { c
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const REDUCED = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
 // Bump with every release. Browsers may keep an old copy of the page for a while, so the game checks for a newer one.
-const APP_VERSION = '2026-11-14.8';
+const APP_VERSION = '2026-11-14.9';
 const INK = '#24145A';
 
 // ---------- data (pure, also read by the recording tool) ----------
@@ -406,10 +406,11 @@ const TAUNTS = [
 ];
 const ESCAPE = { gu:'પકડી બતાવ!', roman:'Pakdi bataav!' };
 // Battle countdown: with 11 seconds left Mithu says "Jaldi!", then counts 10 down to 1 in Gujarati.
-const JALDI = { gu:'જલદી!', roman:'Jaldi!' };
+const JALDI = { gu:'જલદી!', roman:'Jaldi!', en:'Hurry!' };
 const COUNT = [ // COUNT[n - 1] is n
-  { gu:'એક', roman:'ek' }, { gu:'બે', roman:'be' }, { gu:'ત્રણ', roman:'tran' }, { gu:'ચાર', roman:'chaar' }, { gu:'પાંચ', roman:'paanch' },
-  { gu:'છ', roman:'chha' }, { gu:'સાત', roman:'saat' }, { gu:'આઠ', roman:'aath' }, { gu:'નવ', roman:'nav' }, { gu:'દસ', roman:'das' },
+  { gu:'એક', roman:'ek', en:'one' }, { gu:'બે', roman:'be', en:'two' }, { gu:'ત્રણ', roman:'tran', en:'three' }, { gu:'ચાર', roman:'chaar', en:'four' },
+  { gu:'પાંચ', roman:'paanch', en:'five' }, { gu:'છ', roman:'chha', en:'six' }, { gu:'સાત', roman:'saat', en:'seven' }, { gu:'આઠ', roman:'aath', en:'eight' },
+  { gu:'નવ', roman:'nav', en:'nine' }, { gu:'દસ', roman:'das', en:'ten' },
 ];
 // When a kite gets away, Mithu cheers the child on.
 const ENCOURAGE = [
@@ -671,7 +672,7 @@ if ('speechSynthesis' in window) {
 }
 const guToDeva = s => s.replace(/[ઁ-૯]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x180));
 const VOICE = { mithu:{ pitch:1.75, rate:0.95 }, rival:{ pitch:0.8, rate:0.95 }, guide:{ pitch:1.05, rate:0.8 } };
-function speakTTS(line, who) {
+function speakTTS(line, who, onFail) {
   if (!('speechSynthesis' in window)) return false;
   try {
     let v = null, text = '';
@@ -686,7 +687,7 @@ function speakTTS(line, who) {
     u.voice = v; u.lang = v.lang; u.pitch = st.pitch; u.rate = st.rate;
     // some phones accept the request and then never speak; if nothing starts, fall back
     let started = false;
-    const guard = setTimeout(() => { if (!started) noVoice(line, who); }, 1500);
+    const guard = setTimeout(() => { if (!started) (onFail || noVoice)(line, who); }, 1500);
     u.onstart = () => { started = true; clearTimeout(guard); if (who === 'mithu') ttsTalking = true; };
     u.onend = u.onerror = () => { started = true; clearTimeout(guard); ttsTalking = false; };
     speechSynthesis.speak(u);
@@ -1444,8 +1445,11 @@ function bubble(el, line, ms = 2600) {
 // to speak once a second. With no recording yet the line still shows in Mithu's bubble, with a soft sound.
 function mithuRecorded(line, ms, fallback) {
   bubble(bubM, line, ms || 2000); M.talkUntil = T + 0.8;
-  if (S.sound && refsFor(line, 'mithu')) speak(line, 'mithu');
-  else { stopVoice(); if (fallback) fallback(); }
+  if (!S.sound) return;
+  if (refsFor(line, 'mithu')) { speak(line, 'mithu'); return; }
+  // no clip yet: the device voice at its normal pitch (never Mithu's high pitch), and no squawk if it can't speak
+  if (speakTTS(line, 'guide', () => { if (fallback) fallback(); })) return;
+  stopVoice(); if (fallback) fallback();
 }
 function mithuSays(line, ms, voice = true) { bubble(bubM, line, ms || 2600); if (voice) speak(line, 'mithu'); else M.talkUntil = T + 1; }
 function rivalSays(line, ms, voice = true) { bubble(bubR, line, ms || 2400); if (voice) speak(line, 'rival'); }
@@ -1784,11 +1788,12 @@ function showBattle(it, i, rv) {
   }
 }
 const guDigits = n => String(n).replace(/\d/g, d => String.fromCharCode(0x0AE6 + +d));
+const bothDigits = n => guDigits(n) + ' · ' + n;   // Gujarati and English numerals side by side
 // The battle clock. With 11 seconds left Mithu shouts "Jaldi!", then counts down "das … ek" one a second,
 // with the Gujarati numeral shown by the timer bar. At zero the battle times out and the kite gets away.
 function startTimer(id, secs) {
   const t0 = performance.now(); battle.timer = 1; let lastLeft = Math.ceil(secs);
-  { const tc = $('#tcount'); if (tc) tc.textContent = guDigits(lastLeft); }   // the seconds show from the start
+  { const tc = $('#tcount'); if (tc) tc.textContent = bothDigits(lastLeft); }   // the seconds show from the start
   timerInt = setInterval(() => {
     if (!alive(id)) { stopTimers(); return; }
     const el = (performance.now() - t0) / 1000, f = 1 - el / secs; battle.timer = Math.max(0, f);
@@ -1797,9 +1802,9 @@ function startTimer(id, secs) {
     if (left < lastLeft && left >= 1) {   // a new whole second (only the latest is said if the clock skipped any)
       lastLeft = left;
       const tc = $('#tcount'), tm = $('#tmr');
-      if (left === 11) { mithuRecorded(JALDI, 950, SFX.tick); M.flap = 1; M.hop = 1; if (tc) tc.textContent = JALDI.gu; if (tm) tm.classList.add('hurry'); }
-      else if (left <= 10) { mithuRecorded(COUNT[left - 1], 900, SFX.tick); if (tc) tc.textContent = guDigits(left); if (tm) tm.classList.add('hurry'); }
-      else if (tc) tc.textContent = guDigits(left);
+      if (left === 11) { mithuRecorded({ gu: JALDI.gu, roman: JALDI.roman + ' · ' + JALDI.en }, 950, SFX.tick); M.flap = 1; M.hop = 1; if (tc) tc.textContent = JALDI.gu + ' ' + JALDI.en; if (tm) tm.classList.add('hurry'); }
+      else if (left <= 10) { const c = COUNT[left - 1]; mithuRecorded({ gu: c.gu, roman: c.roman + ' · ' + c.en }, 900, SFX.tick); if (tc) tc.textContent = bothDigits(left); if (tm) tm.classList.add('hurry'); }
+      else if (tc) tc.textContent = bothDigits(left);
     }
     if (f <= 0) { stopTimers(); fire('timeout'); }
   }, 100);
