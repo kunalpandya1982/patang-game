@@ -253,6 +253,7 @@ canvas#sky,canvas#fx{position:fixed;left:0;top:0;display:block}
 .vtick{width:40px;height:40px;flex:none;border-radius:50%;background:var(--leelo);color:#fff;border:3px solid var(--ink);display:grid;place-items:center;font-size:22px;font-weight:800;line-height:1}
 .choice{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 12px}
 .choice .btn{min-height:46px;font-size:17px;padding:4px 8px}
+.updatebtn{position:fixed;z-index:50;left:50%;top:calc(var(--st) + 68px);transform:translateX(-50%);min-height:46px;font-size:17px;white-space:nowrap}
 .timerrow{display:flex;align-items:center;gap:10px;margin:0 0 10px}
 .timerrow .timer{flex:1;margin:0}
 .timer.hurry i{background:var(--rani)}
@@ -369,6 +370,8 @@ const pick = a => a[Math.floor(Math.random() * a.length)];
 const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const REDUCED = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+// Bump with every release. Browsers may keep an old copy of the page for a while, so the game checks for a newer one.
+const APP_VERSION = '2026-11-14.7';
 const INK = '#24145A';
 
 // ---------- data (pure, also read by the recording tool) ----------
@@ -1690,20 +1693,19 @@ async function startSession(who) {
     if (G.who === 'big') speak(it.q, 'rival');
     const r = await until(['correct', 'timeout']); if (!alive(id)) return;
     stopTimers();
+    const lastOne = i === G.battles.length - 1;
     if (r.name === 'correct') {
+      // the pull gets its own 30-second clock, with the same Jaldi and countdown
       showPull();
-      await until('pulled'); if (!alive(id)) return;
-      const gain = cutRival(rv);
-      await sleep(1500); if (!alive(id)) return;
-      showCut(rv, gain, i === G.battles.length - 1);
-    } else {
-      // time ran out: the rival flies off taunting, then Mithu cheers the child on
-      escapeRival(); G.esc++;
-      await sleep(1400); if (!alive(id)) return;
-      const cheer = ENCOURAGE[G.esc % ENCOURAGE.length];
-      mithuSays(cheer, 3400); M.flap = 1.2; M.hop = 1;
-      showEscape(rv, i === G.battles.length - 1, cheer);
-    }
+      startTimer(id, 30);
+      const p = await until(['pulled', 'timeout']); if (!alive(id)) return;
+      stopTimers();
+      if (p.name === 'pulled') {
+        const gain = cutRival(rv);
+        await sleep(1500); if (!alive(id)) return;
+        showCut(rv, gain, lastOne);
+      } else if (!(await kiteEscapes(id, rv, lastOne))) return;
+    } else if (!(await kiteEscapes(id, rv, lastOne))) return;
     await until('next'); if (!alive(id)) return;
     hideCard(); battle.crossing = false; player.spd = 1.8; aimKites(false);
     await sleep(500); if (!alive(id)) return;
@@ -1777,6 +1779,7 @@ const guDigits = n => String(n).replace(/\d/g, d => String.fromCharCode(0x0AE6 +
 // with the Gujarati numeral shown by the timer bar. At zero the battle times out and the kite gets away.
 function startTimer(id, secs) {
   const t0 = performance.now(); battle.timer = 1; let lastLeft = Math.ceil(secs);
+  { const tc = $('#tcount'); if (tc) tc.textContent = guDigits(lastLeft); }   // the seconds show from the start
   timerInt = setInterval(() => {
     if (!alive(id)) { stopTimers(); return; }
     const el = (performance.now() - t0) / 1000, f = 1 - el / secs; battle.timer = Math.max(0, f);
@@ -1787,13 +1790,24 @@ function startTimer(id, secs) {
       const tc = $('#tcount'), tm = $('#tmr');
       if (left === 11) { mithuSays(JALDI, 950); M.flap = 1; M.hop = 1; if (tc) tc.textContent = JALDI.gu; if (tm) tm.classList.add('hurry'); }
       else if (left <= 10) { mithuSays(COUNT[left - 1], 900); if (tc) tc.textContent = guDigits(left); if (tm) tm.classList.add('hurry'); }
+      else if (tc) tc.textContent = guDigits(left);
     }
     if (f <= 0) { stopTimers(); fire('timeout'); }
   }, 100);
 }
+// Time ran out (in the battle or the pull): the rival flies off taunting, then Mithu cheers the child on.
+async function kiteEscapes(id, rv, lastOne) {
+  escapeRival(); G.esc++;
+  await sleep(1400); if (!alive(id)) return false;
+  const cheer = ENCOURAGE[G.esc % ENCOURAGE.length];
+  mithuSays(cheer, 3400); M.flap = 1.2; M.hop = 1;
+  showEscape(rv, lastOne, cheer);
+  return true;
+}
 function showPull() {
   battle.pull = 0; const need = G.who === 'little' ? 8 : 12; let taps = 0, done = false;
-  showCard('<h2 class="say center">Pull fast and shout</h2><div class="shout gu">કાઈ પો છે!</div><div class="roman center">Kaai po chhe!</div>' +
+  showCard('<div class="timerrow"><div class="timer" id="tmr" aria-hidden="true"><i id="tbar"></i></div><b class="tcount gu" id="tcount" aria-live="polite"></b></div>' +
+    '<h2 class="say center">Pull fast and shout</h2><div class="shout gu">કાઈ પો છે!</div><div class="roman center">Kaai po chhe!</div>' +
     '<div class="pullwrap"><button class="pullbtn" id="pullBtn" aria-label="Pull the string. Tap fast!">' +
     '<svg class="ring" viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="50" r="46" class="bg"/><circle cx="50" cy="50" r="46" class="fg" id="pullRing"/></svg>' +
     '<span class="g gu">ખેંચો!</span><span class="t">Tap tap tap!</span></button></div>', {}, 'pullcard');
@@ -2022,7 +2036,8 @@ function openGrownups() {
       (OWN.little.size + OWN.big.size + OWN.family.size ? '<button class="btn white sm" data-act="delrec">Delete all</button>' : '') + '</div>' +
     '<div class="set row"><div><div class="sl">Grown-up PIN</div><div class="sv2">Opens this screen and confirms missions.</div></div><button class="btn white sm" data-act="pin">Change</button></div>' +
     '<div class="set"><div class="sl">How it works</div><p class="note">Kids say every word out loud. You tap Yes or Again, so the game never marks their speech itself.</p></div>' +
-    '<div class="stack"><button class="btn white block" data-act="reset">Reset progress</button><button class="btn rani block" data-act="close">Done</button></div>',
+    '<div class="stack"><button class="btn white block" data-act="reset">Reset progress</button><button class="btn rani block" data-act="close">Done</button></div>' +
+    '<p class="sub center" style="margin:12px 0 0">Patang version ' + APP_VERSION + '</p>',
     { week: b => { S.week = +b.dataset.w; save(); SFX.pop(); openGrownups(); },
       test: () => { if (!S.sound) { toast('Sound is off'); return; } mithuSays(MITHU.kemcho, 2000); },
       voice: () => openSheets(),
@@ -2223,6 +2238,18 @@ let rz = null;
 window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(layout, 120); });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { try { speechSynthesis.cancel(); } catch (e) {} } });
 
+// A newer release on the server? Offer a one-tap reload rather than leaving an old copy running.
+async function checkForUpdate() {
+  try {
+    const r = await fetch(location.href.split('#')[0], { cache: 'no-store' }); if (!r.ok) return;
+    const m = (await r.text()).match(/const APP_VERSION = '([^']+)'/);
+    if (!m || m[1] === APP_VERSION || $('#updateBtn')) return;
+    const b = document.createElement('button'); b.id = 'updateBtn'; b.className = 'btn leelo updatebtn'; b.textContent = 'New version ready: tap to update';
+    b.addEventListener('click', () => location.reload()); document.body.appendChild(b);
+  } catch (e) {}
+}
+checkForUpdate();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkForUpdate(); });
 loadVoiceMap();
 ownReady = loadOwnClips();
 micProbe();
