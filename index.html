@@ -253,6 +253,8 @@ canvas#sky,canvas#fx{position:fixed;left:0;top:0;display:block}
 .vtick{width:40px;height:40px;flex:none;border-radius:50%;background:var(--leelo);color:#fff;border:3px solid var(--ink);display:grid;place-items:center;font-size:22px;font-weight:800;line-height:1}
 .choice{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 12px}
 .choice .btn{min-height:46px;font-size:17px;padding:4px 8px}
+.rtbar{height:12px;border:3px solid var(--ink);border-radius:999px;overflow:hidden;background:#fff;margin:6px 0 10px}
+.rtbar i{display:block;height:100%;width:0;background:var(--leelo);transition:width .3s}
 .mic.off{background:#B7B0D8}
 .mic.off svg{opacity:.85}
 .flyer .btn.rec{min-height:48px;font-size:17px;padding:4px 10px;gap:6px;box-shadow:0 4px 0 var(--ink)}
@@ -832,7 +834,7 @@ function micDenied(e) {
 // Say plainly why recording isn't happening, next to the button that was tapped.
 function micExplain(say) { const t = MIC_TEXT[MIC.why || 'failed']; SFX.boing(); say(t); toast('The microphone isn’t available'); }
 // Any card change cancels a take in progress, so a late recording never lands on the wrong line.
-function micCancel() { listenStop(); MIC.token++; if (MIC.busy) MIC.busy.stop(); }
+function micCancel() { listenStop(); rtStop(); MIC.token++; if (MIC.busy) MIC.busy.stop(); }
 // One tap starts, a second tap (or a pause) stops; onClip gets { buf, start, end, blob }.
 async function micTap(btn, onClip, say) {
   say = say || (() => {});
@@ -936,7 +938,7 @@ function playBufs(clips, who) {
   const a = ac(); if (!a) return 0;
   if (!VG) { VG = a.createGain(); VG.gain.value = 1; VG.connect(a.destination); }
   for (const x of curSrc) { try { x.stop(); } catch (e) {} }
-  const rate = RATE[who] || 1; let t = a.currentTime + 0.03; curSrc = [];
+  const rate = who === 'mithu' && S.squeak === false ? 1 : (RATE[who] || 1); let t = a.currentTime + 0.03; curSrc = [];
   for (const c of clips) {
     const b = c.buf || c, st = c.start || 0, du = Math.max(0.05, (c.end != null ? c.end : b.duration) - st);
     const x = a.createBufferSource(); x.buffer = b; x.playbackRate.value = rate; x.connect(VG); x.start(t, st, du); curSrc.push(x); t += du / rate + 0.3;
@@ -1584,7 +1586,7 @@ function renderMithuVoice(keepScroll, msg) {
   showCard('<div class="headrow"><h2 class="say">Mithu’s voice</h2><span class="pill sm">' + kiteCv(Fy.design, Fy.c1, Fy.c2, 22, 28) + (who === 'little' ? 'Little flyer' : 'Big flyer') + '</span></div>' +
     '<div class="clabel" style="margin-top:0">When Mithu talks, use</div>' +
     '<div class="choice" role="group" aria-label="Mithu’s voice"><button class="btn ' + (mine ? 'leelo' : 'white') + '" data-act="usemine" aria-pressed="' + mine + '">My voice</button>' +
-    '<button class="btn ' + (mine ? 'white' : 'leelo') + '" data-act="useparrot" aria-pressed="' + !mine + '">Mithu’s own</button></div>' +
+    '<button class="btn ' + (mine ? 'white' : 'leelo') + '" data-act="useparrot" aria-pressed="' + !mine + '">' + (OWN.family.size ? 'Grown-up’s voice' : 'Mithu’s own') + '</button></div>' +
     '<p class="sub" style="margin:-2px 0 10px">Mithu learns your voice while you play: each word you say in a lesson is kept when a grown-up taps Yes. ' +
       'You don’t need to record anything here, but you can redo or add a line. ' + done + ' of ' + all.length + ' in your voice.</p>' +
     '<div class="word"><div class="txt"><div class="mid-gu gu">' + esc(cur.gu) + '</div><div class="roman lg">' + esc(cap(cur.roman)) + '</div></div>' +
@@ -1980,8 +1982,13 @@ function openGrownups() {
   $('#logo').hidden = true;
   showCard('<div class="headrow"><h2 class="say">Grown-ups</h2><button class="round" data-act="close" aria-label="Close">' + CLOSE_SVG + '</button></div>' +
     '<div class="set"><div class="sl">Word pack</div><div class="weeks">' + WEEKS.map(w => '<button class="wk ' + (S.week === w.week ? 'sel' : '') + '" data-act="week" data-w="' + w.week + '" aria-pressed="' + (S.week === w.week) + '"><b>Week ' + w.week + '</b><span>' + w.theme + '</span></button>').join('') + '</div></div>' +
-    '<div class="set"><div class="sl">Your voice</div><p class="note">Record the game’s lines once and the kids hear you instead of a computer voice. Mithu copies you in a squeaky parrot voice.</p>' +
-    '<button class="btn block" data-act="voice" style="margin-top:10px">Recording sheets</button></div>' +
+    '<div class="set"><div class="sl">Your voice</div><p class="note">Read the game’s lines once and the kids hear you instead of a computer voice: Mithu, the guide and the rival kites all speak like you. ' +
+      (OWN.family.size ? OWN.family.size + ' line' + (OWN.family.size === 1 ? '' : 's') + ' recorded so far.' : 'Nothing recorded yet.') + '</p>' +
+    '<button class="btn block" data-act="voice" style="margin-top:10px">' + MIC_SVG + 'Read the lines</button>' +
+    '<div class="row" style="margin-top:10px"><button class="btn white sm" data-act="savevoice"' + (OWN.family.size ? '' : ' disabled') + '>Save to a file</button><button class="btn white sm" data-act="loadvoice">Load a file</button></div>' +
+    '<p class="sub" style="margin:8px 0 0">Recordings live on this device. Save them to a file as a backup, or to load your voice onto the kids’ tablet.</p></div>' +
+    '<div class="set row"><div><div class="sl">Mithu’s parrot squeak</div><div class="sv2">On: Mithu says your lines faster and higher, like a parrot. Off: he sounds just like you.</div></div>' +
+      '<button class="btn sm ' + (S.squeak !== false ? 'leelo' : 'white') + '" data-act="squeak" aria-pressed="' + (S.squeak !== false) + '">' + (S.squeak !== false ? 'On' : 'Off') + '</button></div>' +
     '<div class="set row"><div><div class="sl">What plays now</div><div class="sv2">' + esc(voiceStatus()) + '</div></div><button class="btn white sm" data-act="test">Test</button></div>' +
     '<div class="set row"><div><div class="sl">Mithu listens in lessons</div><div class="sv2">He picks up each word your child says and keeps it when you tap Yes. Nothing leaves this device.</div></div>' +
       '<button class="btn sm ' + (S.listen !== false ? 'leelo' : 'white') + '" data-act="listen" aria-pressed="' + (S.listen !== false) + '">' + (S.listen !== false ? 'On' : 'Off') + '</button></div>' +
@@ -1993,14 +2000,144 @@ function openGrownups() {
     { week: b => { S.week = +b.dataset.w; save(); SFX.pop(); openGrownups(); },
       test: () => { if (!S.sound) { toast('Sound is off'); return; } mithuSays(MITHU.kemcho, 2000); },
       voice: () => openSheets(),
+      savevoice: () => exportVoice(), loadvoice: () => importVoice(),
+      squeak: () => { S.squeak = S.squeak === false; save(); SFX.pop(); openGrownups(); },
       pin: () => pinSetup(openGrownups, openGrownups),
       listen: () => { S.listen = S.listen === false; save(); SFX.pop(); openGrownups(); },
       delrec: b => { if (b.dataset.armed) { dropAllOwn(); toast('Recordings deleted'); openGrownups(); return; } b.dataset.armed = '1'; b.textContent = 'Tap again'; b.classList.add('rani'); b.classList.remove('white'); },
-      reset: b => { if (!armed) { armed = true; b.textContent = 'Tap again to reset everything'; b.classList.add('rani'); b.classList.remove('white'); return; } const keep = { sound:S.sound, week:S.week, pin:S.pin }; S = defaults(); Object.assign(S, keep); save(); toast('Progress reset'); goTitle(); },
+      reset: b => { if (!armed) { armed = true; b.textContent = 'Tap again to reset everything'; b.classList.add('rani'); b.classList.remove('white'); return; } const keep = { sound:S.sound, week:S.week, pin:S.pin, listen:S.listen, squeak:S.squeak }; S = defaults(); Object.assign(S, keep); save(); toast('Progress reset'); goTitle(); },
       close: () => goTitle() });
 }
 
-// ---------- recording sheets (read aloud while Voice Memos records) ----------
+// ---------- read-through: a grown-up reads every line once, hands-free ----------
+// One line at a time, shown large. The mic opens once the game is quiet, catches the line and saves it as the
+// grown-up's voice, which then plays for the guide, the rivals and (unless a child's own take exists) Mithu.
+// The take plays back while the next line comes up, then the mic listens again. Back redoes a line, Skip moves on.
+// The screen updates in place, so only leaving it (any other card) stops the listening.
+let RT = null;
+function rtStop() { if (RT) { RT.tok++; RT.on = false; } }
+function rtLab(text, on) {
+  const l = $('#rtLab'), b = dock.querySelector('[data-act=rtmic]'); if (l) l.textContent = text;
+  if (b) { b.classList.toggle('on', !!on); if (!on) b.style.setProperty('--lv', '0'); }
+}
+function rtShow() {
+  if (!RT || !$('#rtGu')) return;
+  const l = RT.lines[RT.i], n = RT.lines.length, done = RT.lines.filter(lineHas).length;
+  $('#rtCount').textContent = 'Line ' + (RT.i + 1) + ' of ' + n;
+  $('#rtTitle').textContent = l.sheet || '';
+  $('#rtGu').textContent = l.gu; $('#rtRo').textContent = cap(l.roman);
+  $('#rtBar').style.width = Math.round(done / n * 100) + '%';
+  $('#rtDone').textContent = done + ' of ' + n + ' in your voice';
+}
+function openReadThrough(lines) {
+  RT = { lines, i: Math.max(0, lines.findIndex(l => !lineHas(l))), on: false, tok: 0 };
+  showCard('<div class="headrow"><h2 class="say">Read aloud</h2><span class="sub" id="rtCount"></span></div>' +
+    '<div class="sheetname" id="rtTitle"></div>' +
+    '<div class="rtbar" aria-hidden="true"><i id="rtBar"></i></div>' +
+    '<div class="word"><div class="txt"><div class="big-gu gu" id="rtGu"></div><div class="roman lg" id="rtRo"></div></div>' +
+    '<button class="hear" data-act="rtplay" aria-label="Play my recording of this line">' + SPEAKER + '</button></div>' +
+    '<div class="microw lsn"><button class="mic" data-act="rtmic" aria-label="Pause or carry on">' + MIC_SVG + '</button><span class="miclab" id="rtLab"></span></div>' +
+    '<div class="row center" style="margin-top:10px"><button class="btn white sm" data-act="rtback">◀ Back</button><button class="btn white sm" data-act="rtskip">Skip ▶</button></div>' +
+    '<p class="sub center" style="margin:10px 0 0">Read each line when it appears. It saves itself, plays back, and the next line comes up. <b id="rtDone"></b></p>' +
+    '<button class="btn rani block" data-act="rtdone" style="margin-top:12px">Done</button>',
+    { rtplay: () => { const l = RT && RT.lines[RT.i]; if (l && lineHas(l)) { rtPause(); speak(l, 'guide'); } else toast('Not recorded yet'); },
+      rtmic: () => { if (RT.on) rtPause(); else rtResume(); },
+      rtback: () => { if (RT.i > 0) { RT.i--; rtShow(); rtResume(); } },
+      rtskip: () => { if (RT.i < RT.lines.length - 1) { RT.i++; rtShow(); rtResume(); } else rtFinish(); },
+      rtdone: () => { rtStop(); RT = null; openSheets(); } });
+  rtShow();
+  if (micReady()) rtResume(); else rtLab(MIC_TEXT[MIC.ok ? 'policy' : 'none'], false);
+}
+function rtPause() { if (!RT) return; RT.tok++; RT.on = false; if (MIC.busy) MIC.busy.stop(); rtLab('Paused. Tap the mic to carry on.', false); }
+function rtResume() {
+  if (!RT) return;
+  if (!MIC.ok) { rtLab(MIC_TEXT.none, false); return; }
+  if (MIC.why === 'denied') MIC.why = '';
+  if (MIC.busy) MIC.busy.stop();
+  RT.on = true; rtLoop(++RT.tok);
+}
+function rtFinish() {
+  if (!RT) return;
+  RT.tok++; RT.on = false; rtShow();
+  rtLab('All done! Tap Back to redo any line, or Done.', false);
+  SFX.fanfare(); confetti(W / 2, H * 0.3, 60);
+}
+async function rtLoop(tok) {
+  const live = () => RT && tok === RT.tok;
+  await sleep(350);
+  while (live()) {
+    if (gameTalking()) { rtLab('Listen…', false); await sleep(150); continue; }
+    if (MIC.busy || MIC.starting) { await sleep(150); continue; }
+    rtLab('Listening… read it now', true);
+    let blob = null;
+    try {
+      MIC.starting = true;
+      const b = dock.querySelector('[data-act=rtmic]');
+      blob = await recordOnce(lv => { if (b) b.style.setProperty('--lv', lv.toFixed(2)); }, { maxMs: 10000, idleMs: 20000, abort: () => !live() || gameTalking() });
+    } catch (e) {
+      MIC.starting = false; micDenied(e);
+      if (live()) { RT.on = false; rtLab(MIC_TEXT[MIC.why] || MIC_TEXT.failed, false); }
+      return;
+    }
+    if (!live()) return;
+    if (!blob) {                               // the game spoke (try again), or nobody read for a while (pause)
+      if (gameTalking()) continue;
+      RT.on = false; rtLab('Paused. Tap the mic to carry on.', false); return;
+    }
+    const clip = await blobToClip(blob);
+    if (!live()) return;
+    if (!clip) { rtLab('Didn’t catch that. Read it again.', false); await sleep(900); continue; }
+    saveOwn('family', RT.lines[RT.i].key, clip);
+    stopVoice(); playBufs([clip], 'guide');    // hear it back while the next line comes up
+    if (RT.i >= RT.lines.length - 1) { rtFinish(); return; }
+    RT.i++; rtShow();
+  }
+}
+const allLines = () => allSheets().flatMap(sh => sh.lines.map(l => Object.assign({ sheet: sh.name }, l)));
+const sheetLines = i => allSheets()[i].lines.map(l => Object.assign({ sheet: allSheets()[i].name }, l));
+
+// ---------- your voice as a file: a backup, and the way to put it on another device ----------
+function abToB64(ab) { const u = new Uint8Array(ab); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); }
+function b64ToAb(b64) { const s = atob(b64), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u.buffer; }
+async function exportVoice() {
+  const keys = [...OWN.family]; if (!keys.length) { toast('No grown-up recordings yet'); return; }
+  const out = { app: 'patang', kind: 'voice', v: 1, saved: new Date().toISOString(), clips: {} };
+  for (const k of keys) {
+    try {
+      const rec = await idbDo('readonly', st => st.get('family|' + k)); if (!rec) continue;
+      const ab = rec.ab || (rec.blob ? await rec.blob.arrayBuffer() : null); if (!ab) continue;
+      out.clips[k] = { type: rec.type || (rec.blob && rec.blob.type) || 'audio/webm', start: rec.start || 0, end: rec.end || 0, b64: abToB64(ab) };
+    } catch (e) {}
+  }
+  const n = Object.keys(out.clips).length;
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' }));
+  a.download = 'patang-my-voice.json'; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+  toast('Saved ' + n + ' line' + (n === 1 ? '' : 's') + ' to a file');
+}
+function importVoice() {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.onchange = async () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    if (f.size > 40 * 1024 * 1024) { toast('That file is too big'); return; }
+    try {
+      const j = JSON.parse(await f.text());
+      if (!j || j.app !== 'patang' || j.kind !== 'voice' || !j.clips || typeof j.clips !== 'object') throw new Error('not a voice file');
+      let n = 0;
+      for (const [k, c] of Object.entries(j.clips)) {
+        if (!k || k.includes('|') || !c || typeof c.b64 !== 'string' || !/^audio\//.test(String(c.type || ''))) continue;
+        const rec = { ab: b64ToAb(c.b64), type: c.type, start: +c.start || 0, end: +c.end || 0, at: Date.now() };
+        await idbDo('readwrite', st => st.put(rec, 'family|' + k));
+        OWN.family.add(k); clipBufs.delete('family|' + k); n++;
+      }
+      toast(n ? 'Loaded ' + n + ' line' + (n === 1 ? '' : 's') + ' in your voice' : 'No lines found in that file');
+      openGrownups();
+    } catch (e) { toast('That isn’t a Patang voice file'); }
+  };
+  inp.click();
+}
+
+// ---------- recording sheets ----------
 let SHEETS = null;
 const allSheets = () => SHEETS || (SHEETS = buildSheets());
 const lineHas = l => !!VMAP[l.key] || OWN.family.has(l.key);
@@ -2013,23 +2150,25 @@ const cap = t => t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
 function openSheets() {
   const all = allSheets(), total = all.reduce((n, sh) => n + sh.lines.length, 0), have = all.reduce((n, sh) => n + sheetDone(sh), 0);
   showCard('<div class="headrow"><h2 class="say">Recording sheets</h2><button class="round" data-act="back" aria-label="Back">' + CLOSE_SVG + '</button></div>' +
-    '<p class="tip" style="margin-top:0">' + (have ? have + ' of ' + total + ' lines are in your voice.' : 'Start with sheets 1 and 2. Each takes about a minute.') + '</p>' +
-    (micReady() ? '<p class="tip">Open a sheet, tap the mic next to a line and read it out. Your recordings stay on this device.</p>'
-      : '<ol class="howto"><li>Start a new recording in Voice Memos.</li><li>Come back here, open a sheet and read it out.</li><li>Stop recording and send it to Claude in your chat.</li></ol>') +
+    '<p class="tip" style="margin-top:0">' + have + ' of ' + total + ' lines are in your voice. Read them once and Mithu, the guide and the rival kites all speak like you.</p>' +
+    (micReady() ? '<button class="btn rani block" data-act="readall" style="margin:4px 0 12px">' + MIC_SVG + (have ? 'Carry on reading (' + (total - have) + ' left)' : 'Read all ' + total + ' lines') + '</button>' +
+        '<p class="sub" style="margin:0 0 10px">About 15 minutes. You can stop any time and carry on later. Recordings stay on this device; save them to a file in Grown-ups.</p>'
+      : '<p class="tip">' + MIC_TEXT[MIC.ok ? 'policy' : 'none'] + '</p>') +
     '<div class="sheets">' + all.map((sh, i) => {
       const d = sheetDone(sh), n = sh.lines.length;
       return '<button class="sheet ' + (d === n ? 'full' : '') + '" data-act="open" data-i="' + i + '"><span class="sn">' + (i + 1) + '</span><span class="st"><b>' + esc(sh.name) + '</b><span>' +
         (d === n ? 'All ' + n + ' lines recorded' : d ? d + ' of ' + n + ' lines recorded' : n + ' lines') + '</span></span></button>';
     }).join('') + '</div>' +
     '<button class="btn white block" data-act="back" style="margin-top:14px">Back</button>',
-    { open: b => openSheet(+b.dataset.i), back: () => openGrownups() });
+    { open: b => openSheet(+b.dataset.i), readall: () => openReadThrough(allLines()), back: () => openGrownups() });
 }
 function openSheet(i, keepScroll) {
   const all = allSheets(), sh = all[i], ready = micReady();
   const prevTop = keepScroll && dock.querySelector('.card') ? dock.querySelector('.card').scrollTop : 0;
   showCard('<div class="headrow"><h2 class="say">Sheet ' + (i + 1) + '</h2><span class="sub">' + sh.lines.length + ' lines</span></div>' +
     '<div class="sheetname">' + esc(sh.name) + '</div>' +
-    '<p class="tip">' + (ready ? 'Tap the mic, read the line, and pause. Tap ▶ to check it, or the mic again to redo it.'
+    (ready ? '<button class="btn rani block" data-act="readsheet" style="margin-top:10px">' + MIC_SVG + 'Read this sheet</button>' : '') +
+    '<p class="tip">' + (ready ? 'Or tap the mic next to one line to record or redo just that line. Tap ▶ to check it.'
       : 'Read each line once, then pause for a slow count of two. Stumbled? Stop and start this sheet again.') + '</p>' +
     '<ol class="prompter">' + sh.lines.map((l, j) => '<li' + (lineHas(l) ? ' class="has"' : '') + '><span class="n">' + (j + 1) + '</span><span class="w"><span class="gu">' + esc(l.gu) + '</span><span class="r">' + esc(cap(l.roman)) + '</span></span>' +
       (lineHas(l) ? '<button class="hear sm" data-act="play" data-j="' + j + '" aria-label="Play your recording">' + SPEAKER + '</button>' : '') +
@@ -2037,7 +2176,7 @@ function openSheet(i, keepScroll) {
     '<div class="row" style="margin-top:14px">' + (i > 0 ? '<button class="btn white sm" data-act="prev">Previous</button>' : '') + '<span style="flex:1"></span>' +
     (i < all.length - 1 ? '<button class="btn sm" data-act="next">Next sheet</button>' : '') + '</div>' +
     '<button class="btn white block" data-act="back" style="margin-top:12px">All sheets</button>',
-    { play: b => speak(sh.lines[+b.dataset.j], 'guide'),
+    { play: b => speak(sh.lines[+b.dataset.j], 'guide'), readsheet: () => openReadThrough(sheetLines(i)),
       rec: b => { const l = sh.lines[+b.dataset.j]; micTap(b, clip => { saveOwn('family', l.key, clip); stopVoice(); playBufs([clip], 'guide'); openSheet(i, true); }, t => toast(t)); },
       prev: () => openSheet(i - 1), next: () => openSheet(i + 1), back: () => openSheets() });
   const c = dock.querySelector('.card'); if (c) c.scrollTop = prevTop;
