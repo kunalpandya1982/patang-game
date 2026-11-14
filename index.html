@@ -371,7 +371,7 @@ const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { c
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const REDUCED = !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
 // Bump with every release. Browsers may keep an old copy of the page for a while, so the game checks for a newer one.
-const APP_VERSION = '2026-11-14.9';
+const APP_VERSION = '2026-11-14.10';
 const INK = '#24145A';
 
 // ---------- data (pure, also read by the recording tool) ----------
@@ -2201,7 +2201,8 @@ function importVoice() {
 // ---------- recording sheets ----------
 let SHEETS = null;
 const allSheets = () => SHEETS || (SHEETS = buildSheets());
-const lineHas = l => !!VMAP[l.key] || OWN.family.has(l.key);
+// "Recorded" here means in the grown-up's own voice; the game's built-in clips still play until then.
+const lineHas = l => OWN.family.has(l.key);
 const sheetDone = sh => sh.lines.filter(lineHas).length;
 function recSummary() {
   const kids = OWN.little.size + OWN.big.size, fam = OWN.family.size;
