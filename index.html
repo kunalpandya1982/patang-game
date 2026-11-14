@@ -594,6 +594,7 @@ function tone(f, d, type = 'sine', vol = 0.2, delay = 0, f2 = null) {
   const a = ac(); if (!a || !S.sound) return;
   try {
     const t0 = a.currentTime + delay, o = a.createOscillator(), g = a.createGain();
+    gameTalkUntil = Math.max(gameTalkUntil, performance.now() + (delay + d) * 1000 + 120);
     o.type = type; o.frequency.setValueAtTime(f, t0);
     if (f2) o.frequency.exponentialRampToValueAtTime(f2, t0 + d);
     envelope(g, t0, 0.01, d, vol); o.connect(g); g.connect(MG); o.start(t0); o.stop(t0 + d + 0.06);
@@ -604,6 +605,7 @@ function noise(d, vol = 0.25, f = 1000, type = 'bandpass', f2 = null, delay = 0,
   try {
     if (!NB) { const n = a.sampleRate; NB = a.createBuffer(1, n, a.sampleRate); const ch = NB.getChannelData(0); for (let i = 0; i < n; i++) ch[i] = Math.random() * 2 - 1; }
     const t0 = a.currentTime + delay, s = a.createBufferSource(), fl = a.createBiquadFilter(), g = a.createGain();
+    gameTalkUntil = Math.max(gameTalkUntil, performance.now() + (delay + d) * 1000 + 120);
     s.buffer = NB; fl.type = type; fl.frequency.setValueAtTime(f, t0); fl.Q.value = q;
     if (f2) fl.frequency.exponentialRampToValueAtTime(f2, t0 + d);
     envelope(g, t0, 0.02, d, vol); s.connect(fl); fl.connect(g); g.connect(MG); s.start(t0); s.stop(t0 + d + 0.06);
@@ -774,20 +776,24 @@ function micMime() {
   return '';
 }
 // Records one go: it stops itself after the child goes quiet, after 6 seconds, or on a second tap.
-function recordOnce(onLevel) {
+// opts: maxMs (hard stop), idleMs (give up, keeping nothing, if no one speaks that long),
+// abort() (checked as it goes: true throws the take away, e.g. when the game itself starts talking).
+function recordOnce(onLevel, opts = {}) {
+  const maxMs = opts.maxMs || 6000, idleMs = opts.idleMs || 0, abort = opts.abort;
   return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(stream => new Promise((resolve, reject) => {
     const a = ac(), mime = micMime(); let mr;
     try { mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); } catch (e) { stream.getTracks().forEach(t => t.stop()); reject(e); return; }
-    const chunks = []; let an = null, src = null, iv = 0, capT = 0, done = false;
+    const chunks = []; let an = null, src = null, iv = 0, capT = 0, done = false, discard = false;
     if (a) { try { src = a.createMediaStreamSource(stream); an = a.createAnalyser(); an.fftSize = 1024; src.connect(an); } catch (e) { an = null; } }
     const data = an ? new Float32Array(an.fftSize) : null, t0 = performance.now();
     let floor = 1, heardAt = 0, quietAt = 0;
     const cleanup = () => { clearInterval(iv); clearTimeout(capT); stream.getTracks().forEach(t => t.stop()); try { if (src) src.disconnect(); } catch (e) {} if (onLevel) onLevel(0); MIC.busy = null; };
-    const finish = () => { if (done) return; done = true; try { if (mr.state !== 'inactive') mr.stop(); else { cleanup(); resolve(null); } } catch (e) { cleanup(); resolve(null); } };
+    const finish = drop => { if (done) return; done = true; discard = !!drop; try { if (mr.state !== 'inactive') mr.stop(); else { cleanup(); resolve(null); } } catch (e) { cleanup(); resolve(null); } };
     mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
-    mr.onstop = () => { cleanup(); resolve(chunks.length ? new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' }) : null); };
+    mr.onstop = () => { cleanup(); resolve(!discard && chunks.length ? new Blob(chunks, { type: mr.mimeType || mime || 'audio/webm' }) : null); };
     mr.onerror = e => { cleanup(); reject(e.error || e); };
     iv = setInterval(() => {
+      if (abort && abort()) { finish(true); return; }
       if (!an) return;
       an.getFloatTimeDomainData(data); let s = 0; for (let i = 0; i < data.length; i++) s += data[i] * data[i];
       const rms = Math.sqrt(s / data.length), now = performance.now();
@@ -795,12 +801,18 @@ function recordOnce(onLevel) {
       const th = Math.max(0.015, floor * 3);
       if (onLevel) onLevel(Math.min(1, rms / (th * 4)));
       if (rms > th) { if (!heardAt) heardAt = now; quietAt = 0; } else if (heardAt && !quietAt) quietAt = now;
-      if (heardAt && quietAt && now - quietAt > 900 && quietAt - heardAt > 250) finish();
+      if (heardAt && quietAt && now - quietAt > 800 && quietAt - heardAt > 250) finish(false);
+      else if (idleMs && !heardAt && now - t0 > idleMs) finish(true);
     }, 50);
-    capT = setTimeout(finish, 6000);
-    MIC.busy = { stop: finish }; MIC.starting = false;
+    capT = setTimeout(() => finish(false), maxMs);
+    MIC.busy = { stop: () => finish(false) }; MIC.starting = false;
     mr.start();
   }));
+}
+// A recording becomes a clip: decoded, with the silence around the words trimmed off. Too short means no clip.
+async function blobToClip(blob) {
+  try { const buf = await decodeBlob(blob), tr = trimOf(buf); if (tr && tr.end - tr.start >= 0.25) return { buf, start: tr.start, end: tr.end, blob }; } catch (e) {}
+  return null;
 }
 // The trimmed part of a take: from just before the first sound to just after the last.
 function trimOf(buf) {
@@ -820,7 +832,7 @@ function micDenied(e) {
 // Say plainly why recording isn't happening, next to the button that was tapped.
 function micExplain(say) { const t = MIC_TEXT[MIC.why || 'failed']; SFX.boing(); say(t); toast('The microphone isn’t available'); }
 // Any card change cancels a take in progress, so a late recording never lands on the wrong line.
-function micCancel() { MIC.token++; if (MIC.busy) MIC.busy.stop(); }
+function micCancel() { listenStop(); MIC.token++; if (MIC.busy) MIC.busy.stop(); }
 // One tap starts, a second tap (or a pause) stops; onClip gets { buf, start, end, blob }.
 async function micTap(btn, onClip, say) {
   say = say || (() => {});
@@ -837,8 +849,7 @@ async function micTap(btn, onClip, say) {
   if (MIC.why === 'denied' || MIC.why === 'failed' || MIC.why === 'nodevice') MIC.why = '';
   btn.classList.remove('on'); btn.style.setProperty('--lv', '0'); btn.setAttribute('aria-label', 'Record');
   if (tok !== MIC.token || !blob) return;
-  let clip = null;
-  try { const buf = await decodeBlob(blob), tr = trimOf(buf); if (tr && tr.end - tr.start >= 0.25) clip = { buf, start: tr.start, end: tr.end, blob }; } catch (e) {}
+  const clip = await blobToClip(blob);
   if (tok !== MIC.token) return;
   if (!clip) { SFX.boing(); say('Mithu didn’t hear that. Try again, a bit louder!'); return; }
   onClip(clip);
@@ -851,26 +862,72 @@ function micRow(label) {
   return '<div class="microw"><button class="mic' + (off ? ' off' : '') + '" data-act="mic" aria-label="Record">' + MIC_SVG + '</button>' +
     '<span class="miclab">' + (off ? MIC_TEXT[MIC.ok ? 'policy' : 'none'] : label) + '</span></div>';
 }
-// In a lesson, a line is recorded once. If this flyer already has their voice for it, say so instead of asking
-// again ("Record again" is there if they want it). If they chose Mithu's own voice, no recording is asked for.
-function voiceRow(line, label) {
-  const w = curWho(), Fy = S.flyers[w];
-  if (!Fy || Fy.mithuMine === false) return '';
-  if (!OWN[w].has(voiceKey(line.gu))) return micRow(label);
-  return '<div class="microw have"><span class="vtick" aria-hidden="true">✓</span><span class="miclab">Mithu has your voice for this.</span>' +
-    '<button class="btn white sm" data-act="mymithu">' + SPEAKER + 'Hear</button><button class="linkbtn" data-act="redo">Record again</button></div>';
-}
-// Swap the ✓ row for a live mic and start recording straight away.
-function redoVoice(b, line) {
-  const row = b.closest('.microw'); if (!row) return;
-  row.outerHTML = micRow('Say it again…');
-  const m = dock.querySelector('.microw .mic'); if (m) teachMic(m, line);
-}
 function micSay(btn) { const l = btn.parentElement && btn.parentElement.querySelector('.miclab'); return t => { if (l) l.textContent = t; }; }
-// In a session, a take only becomes Mithu's voice once a grown-up taps Yes.
-function teachMic(btn, line) {
-  const say = micSay(btn);
-  micTap(btn, clip => { if (!G) return; G.pending = { who: G.who, key: voiceKey(line.gu), clip }; echo(clip); bubble(bubM, line, 2200); say('Mithu copied you! Tap to say it again.'); }, say);
+
+// ---------- Mithu listens: hands-free capture during lessons ----------
+// The child already says every word out loud; there is no separate recording step. When a lesson card wants
+// them to speak, the mic opens once the game has stopped talking, catches one go and closes again. Anything the
+// game says meanwhile throws that try away, so Mithu never learns the game's own voice. In greeting and teach cards
+// Mithu copies the take straight back; in battles it is kept quietly. A grown-up's Yes makes it Mithu's voice
+// for that line (the latest Yes wins, so Mithu improves as the child does). One take per try: after "Again"
+// (or a tap on the little mic) Mithu listens again.
+let gameTalkUntil = 0;
+const gameTalking = () => performance.now() < gameTalkUntil || !!(window.speechSynthesis && speechSynthesis.speaking);
+const LSN = { on: false, tok: 0, line: null, mode: 'echo' };
+function lessonListenable() {
+  const Fy = G && S.flyers[G.who];
+  return !!Fy && S.listen !== false && Fy.mithuMine !== false && MIC.ok && MIC.why !== 'policy' && MIC.why !== 'none';
+}
+function listenRow() {
+  return lessonListenable() ? '<div class="microw lsn"><button class="mic sm" data-act="listen" aria-label="Mithu is listening. Tap to listen again">' + MIC_SVG + '</button>' +
+    '<span class="miclab" id="lsnLab">' + (MIC.why === 'denied' ? 'Tap the mic so Mithu can hear you' : 'Mithu will listen…') + '</span></div>' : '';
+}
+function listenUI(state, text) {
+  const b = dock.querySelector('.lsn .mic'), l = $('#lsnLab'); if (!b || !l) return;
+  b.classList.toggle('on', state === 'listening'); if (state !== 'listening') b.style.setProperty('--lv', '0');
+  l.textContent = text;
+}
+function listenStop() { LSN.on = false; LSN.tok++; }
+// Start listening for this line on the current card. mode 'echo' (Mithu copies it) or 'quiet' (battles).
+function listenFor(line, mode) {
+  dropPending(); listenStop();
+  LSN.line = line; LSN.mode = mode;
+  if (!lessonListenable() || MIC.why === 'denied') return;   // after a "no", only a tap on the mic asks again
+  LSN.on = true; listenLoop(LSN.tok);
+}
+async function listenLoop(tok) {
+  await sleep(450);   // let the card's own voice begin before judging the room quiet
+  while (tok === LSN.tok) {
+    if (gameTalking()) { listenUI('wait', 'Listen first…'); await sleep(150); continue; }
+    if (MIC.busy || MIC.starting) { await sleep(200); continue; }
+    listenUI('listening', 'Mithu is listening. Say it!');
+    let blob = null;
+    try {
+      MIC.starting = true;
+      const b = dock.querySelector('.lsn .mic');
+      blob = await recordOnce(lv => { if (b) b.style.setProperty('--lv', lv.toFixed(2)); }, { maxMs: 8000, idleMs: 12000, abort: () => tok !== LSN.tok || gameTalking() });
+    } catch (e) {
+      MIC.starting = false; micDenied(e);
+      if (tok === LSN.tok) { LSN.on = false; listenUI('off', MIC_TEXT[MIC.why] || MIC_TEXT.failed); }
+      return;
+    }
+    if (tok !== LSN.tok) return;
+    if (!blob) continue;                       // nobody spoke, or the game talked: listen again
+    const clip = await blobToClip(blob);
+    if (tok !== LSN.tok) return;
+    if (!clip) continue;
+    G.pending = { who: G.who, key: voiceKey(LSN.line.gu), clip };
+    if (LSN.mode === 'echo') { echo(clip); bubble(bubM, LSN.line, 2200); listenUI('heard', 'Mithu heard you!'); }
+    else listenUI('heard', 'Mithu heard you');
+    LSN.on = false; return;
+  }
+}
+// The little mic on a lesson card: stop listening, or listen again (also how a grown-up allows the mic after a "no").
+function listenTap() {
+  if (LSN.on) { listenStop(); if (MIC.busy) MIC.busy.stop(); listenUI('off', 'Tap the mic to listen again'); return; }
+  if (!LSN.line) return;
+  if (MIC.why === 'denied') MIC.why = '';
+  dropPending(); LSN.on = true; listenLoop(++LSN.tok);
 }
 function keepPending() { if (G && G.pending) { saveOwn(G.pending.who, G.pending.key, G.pending.clip); G.pending = null; } }
 function dropPending() { if (G) G.pending = null; }
@@ -884,6 +941,7 @@ function playBufs(clips, who) {
     const b = c.buf || c, st = c.start || 0, du = Math.max(0.05, (c.end != null ? c.end : b.duration) - st);
     const x = a.createBufferSource(); x.buffer = b; x.playbackRate.value = rate; x.connect(VG); x.start(t, st, du); curSrc.push(x); t += du / rate + 0.3;
   }
+  gameTalkUntil = Math.max(gameTalkUntil, performance.now() + (t - a.currentTime) * 1000);
   return t - a.currentTime;
 }
 function speak(line, who = 'guide') {
@@ -1472,8 +1530,8 @@ function flyerCard(who, name, age) {
   return '<div class="flyer ' + who + '"><button class="flyer-main" data-act="fly" data-who="' + who + '" aria-label="Start, ' + name + '">' +
     kiteCv(Fy.design, Fy.c1, Fy.c2, 62, 78) + '<span class="n">' + name + '</span><span class="a">' + age + '</span>' +
     '<span class="s">' + SPOOL_SVG + '<b>' + Fy.spools + '</b></span></button>' +
-    '<button class="btn rani rec" data-act="voice" data-who="' + who + '">' + MIC_SVG + 'Record my voice</button>' +
-    '<button class="mini" data-act="shop" data-who="' + who + '">Kite workshop</button></div>';
+    '<button class="mini" data-act="shop" data-who="' + who + '">Kite workshop</button>' +
+    '<button class="mini" data-act="voice" data-who="' + who + '">Mithu’s voice' + (OWN[who].size ? ' · ' + OWN[who].size : '') + '</button></div>';
 }
 function roadHTML(anim) {
   const n = Math.min(28, S.road); let cells = '';
@@ -1523,11 +1581,12 @@ function renderMithuVoice(keepScroll, msg) {
       '<span class="gu">' + esc(l.gu) + '</span><span class="r">' + esc(cap(l.roman)) + (has ? ' · <b>✓ recorded</b>' : '') + '</span></button>' +
       (has ? '<button class="round sm" data-act="del" data-i="' + i + '" aria-label="Delete my recording of ' + esc(l.roman) + '">' + CLOSE_SVG + '</button>' : '') + '</li>';
   };
-  showCard('<div class="headrow"><h2 class="say">Record my voice</h2><span class="pill sm">' + kiteCv(Fy.design, Fy.c1, Fy.c2, 22, 28) + (who === 'little' ? 'Little flyer' : 'Big flyer') + '</span></div>' +
+  showCard('<div class="headrow"><h2 class="say">Mithu’s voice</h2><span class="pill sm">' + kiteCv(Fy.design, Fy.c1, Fy.c2, 22, 28) + (who === 'little' ? 'Little flyer' : 'Big flyer') + '</span></div>' +
     '<div class="clabel" style="margin-top:0">When Mithu talks, use</div>' +
     '<div class="choice" role="group" aria-label="Mithu’s voice"><button class="btn ' + (mine ? 'leelo' : 'white') + '" data-act="usemine" aria-pressed="' + mine + '">My voice</button>' +
     '<button class="btn ' + (mine ? 'white' : 'leelo') + '" data-act="useparrot" aria-pressed="' + !mine + '">Mithu’s own</button></div>' +
-    '<p class="sub" style="margin:-2px 0 10px">Record each line once. Mithu keeps it and uses it every time he says that line. ' + done + ' of ' + all.length + ' recorded.</p>' +
+    '<p class="sub" style="margin:-2px 0 10px">Mithu learns your voice while you play: each word you say in a lesson is kept when a grown-up taps Yes. ' +
+      'You don’t need to record anything here, but you can redo or add a line. ' + done + ' of ' + all.length + ' in your voice.</p>' +
     '<div class="word"><div class="txt"><div class="mid-gu gu">' + esc(cur.gu) + '</div><div class="roman lg">' + esc(cap(cur.roman)) + '</div></div>' +
     '<button class="hear" data-act="hear" aria-label="Hear how it sounds">' + SPEAKER + '</button></div>' +
     micRow(msg || (hasCur ? 'Tap to record it again' : 'Tap the mic and say it')) +
@@ -1633,11 +1692,11 @@ function showGreet(who) {
     '<button class="hear" data-act="hearq" aria-label="Hear Mithu">' + SPEAKER + '</button></div>' +
     '<h2 class="say center" style="margin-top:12px">Answer Mithu out loud!</h2>' +
     '<div class="answer"><span class="gu">' + ans.gu + '</span><span class="roman">' + ans.roman + '</span><button class="hear sm" data-act="heara" aria-label="Hear the answer">' + SPEAKER + '</button></div>' +
-    voiceRow(ans, 'Tap and answer. Mithu keeps your voice for next time.') +
+    listenRow() +
     judge('Grown-up: did they answer in Gujarati?', 'Again', 'Yes!'),
-    { hearq: () => mithuSays(MITHU.kemcho, 2200), heara: () => speak(ans, 'guide'), mic: b => teachMic(b, ans),
-      mymithu: () => mithuSays(ans, 2000), redo: b => redoVoice(b, ans),
-      again: () => { dropPending(); mithuSays(MITHU.again, 1500); shakeCard(); }, correct: () => { keepPending(); fire('correct'); } });
+    { hearq: () => mithuSays(MITHU.kemcho, 2200), heara: () => speak(ans, 'guide'), listen: listenTap,
+      again: () => { mithuSays(MITHU.again, 1500); shakeCard(); listenFor(ans, 'echo'); }, correct: () => { keepPending(); fire('correct'); } });
+  listenFor(ans, 'echo');
 }
 function showTeach(it, i) {
   const big = G.who === 'big', w = big ? it.a : it;
@@ -1645,10 +1704,11 @@ function showTeach(it, i) {
     '<div class="headrow"><h2 class="say">Teach Mithu</h2><span class="sub">New ' + (big ? 'line' : 'word') + ' ' + (i + 1) + ' of ' + G.teach.length + '</span></div>' +
     '<div class="word"><div class="pic">' + picHTML(it) + '</div><div class="txt"><div class="' + (big ? 'mid-gu' : 'big-gu') + ' gu">' + esc(w.gu) + '</div><div class="roman lg">' + esc(w.roman) + '</div>' +
     '<div class="en">' + esc(w.en) + '</div></div><button class="hear" data-act="hear" aria-label="Hear it" data-focus>' + SPEAKER + '</button></div>' +
-    (voiceRow(w, 'Tap and say it. Mithu keeps your voice for next time.') || '<p class="tip">Listen, then say it to Mithu.</p>') + judge('Grown-up: did they say it?', 'Again', 'Learned it!'),
-    { hear: () => speak(w, 'guide'), mic: b => teachMic(b, w), mymithu: () => mithuSays(w, 2000), redo: b => redoVoice(b, w),
-      again: () => { dropPending(); speak(w, 'guide'); mithuSays(MITHU.again, 1500, false); shakeCard(); },
+    (listenRow() || '<p class="tip">Listen, then say it to Mithu.</p>') + judge('Grown-up: did they say it?', 'Again', 'Learned it!'),
+    { hear: () => speak(w, 'guide'), listen: listenTap,
+      again: () => { speak(w, 'guide'); mithuSays(MITHU.again, 1500, false); shakeCard(); listenFor(w, 'echo'); },
       correct: () => { keepPending(); fire('correct'); } });
+  listenFor(w, 'echo');
 }
 function showBattle(it, i, rv) {
   const step = 1 + G.teach.length + i;
@@ -1659,10 +1719,12 @@ function showBattle(it, i, rv) {
       '<h2 class="say center">Say it to cut the kite!</h2>' +
       '<div class="peek" id="peek" hidden><span class="gu">' + esc(it.gu) + '</span> <span class="roman lg">' + esc(it.roman) + '</span></div>' +
       '<div class="row center"><button class="btn white sm" data-act="help">' + SPEAKER + 'Help me</button></div>' +
+      listenRow() +
       judge('Grown-up: did they say ' + esc(it.roman) + '?', 'Again', 'Yes! Cut it!'),
-      { help: () => { $('#peek').hidden = false; speak(it, 'mithu'); mithuSays(it, 2200, false); },
-        again: () => { $('#peek').hidden = false; speak(it, 'mithu'); mithuSays(MITHU.again, 1500, false); shakeCard(); },
-        correct: () => fire('correct') });
+      { help: () => { $('#peek').hidden = false; speak(it, 'mithu'); mithuSays(it, 2200, false); }, listen: listenTap,
+        again: () => { $('#peek').hidden = false; speak(it, 'mithu'); mithuSays(MITHU.again, 1500, false); shakeCard(); listenFor(it, 'quiet'); },
+        correct: () => { keepPending(); fire('correct'); } });
+    listenFor(it, 'quiet');
   } else {
     showCard('<div class="cardtop"><div class="vs">' + kiteCv(rv.design, rv.c1, rv.c2, 28, 35) + '<span><b>' + rv.name + '</b> asks</span></div>' + pips(step) + '</div>' +
       '<div class="timer" aria-hidden="true"><i id="tbar"></i></div>' +
@@ -1670,14 +1732,17 @@ function showBattle(it, i, rv) {
       '<button class="hear" data-act="hearq" aria-label="Hear the question">' + SPEAKER + '</button></div>' +
       '<div class="row2"><div class="scene" aria-hidden="true">' + it.pic + '</div>' +
       '<div class="hintrow"><button class="btn white sm" data-act="hint" id="hintBtn">Hint</button><span class="hint-text" id="hintT" hidden>' + esc(it.hint) + '</span></div></div>' +
+      listenRow() +
       '<div class="judge"><div class="jq">' + GROWNUP + '<span>Grown-up: was it Gujarati?</span><button class="key" data-act="key">Answer</button></div>' +
       '<div class="keyt" id="keyT" hidden><span class="gu">' + esc(it.a.gu) + '</span><br>' + esc(it.a.roman) + '<br><i>' + esc(it.a.en) + '</i></div>' +
       '<div class="jb"><button class="btn white" data-act="again">Not yet</button><button class="btn leelo" data-act="correct">Yes! Cut it!</button></div></div>',
       { hearq: () => speak(it.q, 'rival'),
         hint: () => { G.hintUsed = true; $('#hintT').hidden = false; $('#hintBtn').hidden = true; SFX.pop(); },
         key: () => { const k = $('#keyT'); k.hidden = !k.hidden; },
-        again: () => { G.hintUsed = true; $('#hintT').hidden = false; $('#hintBtn').hidden = true; player.jit = 1; SFX.boing(); mithuSays(MITHU.again, 1500, false); shakeCard(); },
-        correct: () => fire('correct') });
+        again: () => { G.hintUsed = true; $('#hintT').hidden = false; $('#hintBtn').hidden = true; player.jit = 1; SFX.boing(); mithuSays(MITHU.again, 1500, false); shakeCard(); listenFor(it.a, 'quiet'); },
+        listen: listenTap,
+        correct: () => { keepPending(); fire('correct'); } });
+    listenFor(it.a, 'quiet');
   }
 }
 function startTimer(id, secs) {
@@ -1918,6 +1983,8 @@ function openGrownups() {
     '<div class="set"><div class="sl">Your voice</div><p class="note">Record the game’s lines once and the kids hear you instead of a computer voice. Mithu copies you in a squeaky parrot voice.</p>' +
     '<button class="btn block" data-act="voice" style="margin-top:10px">Recording sheets</button></div>' +
     '<div class="set row"><div><div class="sl">What plays now</div><div class="sv2">' + esc(voiceStatus()) + '</div></div><button class="btn white sm" data-act="test">Test</button></div>' +
+    '<div class="set row"><div><div class="sl">Mithu listens in lessons</div><div class="sv2">He picks up each word your child says and keeps it when you tap Yes. Nothing leaves this device.</div></div>' +
+      '<button class="btn sm ' + (S.listen !== false ? 'leelo' : 'white') + '" data-act="listen" aria-pressed="' + (S.listen !== false) + '">' + (S.listen !== false ? 'On' : 'Off') + '</button></div>' +
     '<div class="set row"><div><div class="sl">Recordings on this device</div><div class="sv2">' + esc(recSummary()) + '</div></div>' +
       (OWN.little.size + OWN.big.size + OWN.family.size ? '<button class="btn white sm" data-act="delrec">Delete all</button>' : '') + '</div>' +
     '<div class="set row"><div><div class="sl">Grown-up PIN</div><div class="sv2">Opens this screen and confirms missions.</div></div><button class="btn white sm" data-act="pin">Change</button></div>' +
@@ -1927,6 +1994,7 @@ function openGrownups() {
       test: () => { if (!S.sound) { toast('Sound is off'); return; } mithuSays(MITHU.kemcho, 2000); },
       voice: () => openSheets(),
       pin: () => pinSetup(openGrownups, openGrownups),
+      listen: () => { S.listen = S.listen === false; save(); SFX.pop(); openGrownups(); },
       delrec: b => { if (b.dataset.armed) { dropAllOwn(); toast('Recordings deleted'); openGrownups(); return; } b.dataset.armed = '1'; b.textContent = 'Tap again'; b.classList.add('rani'); b.classList.remove('white'); },
       reset: b => { if (!armed) { armed = true; b.textContent = 'Tap again to reset everything'; b.classList.add('rani'); b.classList.remove('white'); return; } const keep = { sound:S.sound, week:S.week, pin:S.pin }; S = defaults(); Object.assign(S, keep); save(); toast('Progress reset'); goTitle(); },
       close: () => goTitle() });
